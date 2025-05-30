@@ -1,153 +1,259 @@
-# OpenAI 反向代理 (自定义提示词注入与灵活流式处理)
+# 通用 OpenAI 格式反代注入服务 (自定义提示词、动态变量与正则处理)
 
-本项目是一个使用 FastAPI 构建的 OpenAI API 反向代理服务。它允许在将请求转发到 OpenAI 之前，动态地从 YAML 模板注入自定义的提示词，并根据客户端请求和服务器配置灵活处理流式与非流式响应。
+本项目是一个使用 FastAPI 构建的通用 OpenAI 格式反代注入服务。它接收标准的 OpenAI Chat Completion API 格式请求，并将请求代理转发到任意的 OpenAI 兼容 API 端点，同时支持强大的提示词模板注入、动态变量处理和响应后处理功能。
 
-## 特性
+## ✨ 核心特性
 
--   **自定义提示词注入**: 从 YAML 文件加载提示词模板。
--   **变量替换**: 支持在模板中使用 `{{api_input}}` (历史消息) 和 `{{user_input}}` (最新用户消息)。
--   **参数透传**: 原始请求中的 `model`, `temperature` 等参数会透传给 OpenAI。
--   **灵活的流式处理**:
-    -   **客户端请求非流式**: 代理向 OpenAI 发送非流式请求，返回完整 JSON。
-    -   **客户端请求流式**:
-        -   若服务器“假流式”配置启用: 代理向 OpenAI 发送非流式请求，向客户端模拟流式响应 (心跳 + 最终完整数据)。
-        -   若服务器“假流式”配置禁用: 代理向 OpenAI 发送流式请求，并将 SSE 流实时转发给客户端。
--   **配置文件驱动**: 通过 `config/settings.yaml` 进行详细配置。
--   **并发支持**: 基于 FastAPI 和 `asyncio`，为高并发设计。
--   **日志记录**: 集成了基本的日志功能。
+### 📡 通用反代注入
+-   **动态目标提取**: 从请求 URL 中提取目标 OpenAI 兼容 API 端点
+-   **URL 格式**: `/{http(s)://target.domain.com}/v1/chat/completions`
+-   **多种认证方式**: 支持 Authorization 头或 URL 查询参数传递 API 密钥
+-   **参数管理**: 忽略客户端参数，强制使用配置文件中的默认生成参数
 
-## 目录结构
+### 🎯 提示词模板注入
+-   **智能模板选择**: 根据用户输入内容自动选择合适的模板（有输入/无输入）
+-   **历史消息注入**: 支持通过 `api_input_placeholder` 在模板中注入历史对话
+-   **变量替换**: 模板中的 `{{user_input}}` 会被替换为用户的实际输入
+-   **消息合并**: 自动合并相邻的同角色消息，优化对话结构
 
-```
-.
-├── src/                          # 源代码目录
-│   ├── __init__.py
-│   ├── main.py                   # FastAPI 应用主文件
-│   ├── config.py                 # 配置加载和管理模块
-│   ├── openai_proxy.py           # 核心代理逻辑模块
-│   └── utils.py                  # (可选) 辅助函数
-├── templates/                    # 提示词模板目录
-│   └── default_prompt.yaml       # 默认提示词模板 (路径可在配置中修改)
-├── config/                       # 配置文件目录
-│   └── settings.yaml             # 应用配置文件
-├── .gitignore
-├── README.md
-└── requirements.txt
-```
+### 🎲 动态变量系统
+-   **骰子投掷**: `{{roll XdY}}` - 模拟投掷 X 个 Y 面骰子并替换为总点数
+-   **随机选择**: `{{random::选项1::选项2::选项3}}` - 从提供的选项中随机选择一个
+-   **实时处理**: 每次请求时动态计算，确保结果的随机性
 
-## 安装与运行
+### 🔧 响应后处理
+-   **正则表达式规则**: 对 API 响应内容应用自定义的查找替换规则
+-   **JSON 载荷注入**: 支持向响应中注入结构化 JSON 数据
+-   **规则级联**: 按定义顺序依次应用多个正则规则
 
-1.  **克隆仓库**:
-    ```bash
-    git clone <your-repo-url>
-    cd <your-repo-name>
-    ```
+### 🌊 流式与非流式支持
+-   **真实流式**: 直接代理目标 API 的流式响应
+-   **非流式**: 处理普通的完整响应
+-   **错误处理**: 完善的超时和错误处理机制
 
-2.  **创建并激活虚拟环境** (推荐):
-    ```bash
-    python -m venv venv
-    # Linux/macOS:
-    source venv/bin/activate
-    # Windows (cmd.exe):
-    # venv\Scripts\activate.bat
-    # Windows (PowerShell):
-    # venv\Scripts\Activate.ps1
-    ```
+## 📋 使用场景
 
-3.  **安装依赖**:
-    ```bash
-    pip install -r requirements.txt
-    ```
+-   **API 聚合**: 统一多个 OpenAI 兼容服务的访问接口
+-   **提示词管理**: 集中管理和注入复杂的提示词模板
+-   **响应定制**: 对 AI 响应进行格式化和后处理
+-   **开发测试**: 为不同的 AI 服务提供统一的测试接口
+-   **代理中转**: 在客户端和目标 API 之间提供增强的代理服务
 
-4.  **配置**:
-    -   编辑 `config/settings.yaml` 以配置应用参数，例如：
-        -   `app_name`: 应用名称。
-        -   `log_level`: 日志级别 (如 INFO, DEBUG)。
-        -   `proxy.prompt_template_path`: 提示词模板文件的路径。
-        -   `proxy.fake_streaming.enabled`: 是否启用“假流式”功能。
-        -   `proxy.fake_streaming.heartbeat_interval`: 假流式心跳间隔（秒）。
-        -   `proxy.openai_request_timeout`: 请求 OpenAI API 的超时时间（秒）。
-    -   编辑 `templates/default_prompt.yaml` (或您在配置中指定的其他模板文件) 来定义您的提示词结构。
+## 🚀 快速开始
 
-5.  **运行服务** (开发模式):
-    ```bash
-    python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-    ```
-    或者，如果 `src/main.py` 中 `if __name__ == "__main__":` 部分的 `uvicorn.run` 未被注释掉，可以直接运行：
-    ```bash
-    python src/main.py
-    ```
-    对于生产环境，建议使用 Gunicorn + Uvicorn workers:
-    ```bash
-    gunicorn -w 4 -k uvicorn.workers.UvicornWorker src.main:app -b 0.0.0.0:8000
-    ```
+### 安装依赖
 
-## 使用方法
-
-将您通常发送给 OpenAI API (例如 `https://api.openai.com/v1/chat/completions`) 的请求，改为发送到本代理服务的对应路径。路径参数应为完整的 OpenAI 目标 URL。
-
-例如，如果代理服务运行在 `http://localhost:8000`：
-
-**原始请求 URL**: `https://api.openai.com/v1/chat/completions`
-
-**代理请求 URL**: `http://localhost:8000/https://api.openai.com/v1/chat/completions`
-(注意 `https://` 前面的 `/`，因为 `:path` 会捕获它)
-
-或者，如果您的 HTTP 客户端对 URL 中的 `//` 有问题，可以考虑对目标 URL 进行 URL编码后作为路径参数，但这会增加客户端的复杂性。当前实现依赖于路径参数能正确捕获包含协议的 URL。
-
-**请求头**:
-确保在请求头中包含您的 OpenAI API Key:
-`Authorization: Bearer YOUR_OPENAI_API_KEY`
-
-**请求体**:
-与 OpenAI API 的格式一致，例如：
-```json
-{
-  "model": "gpt-3.5-turbo",
-  "messages": [
-    {"role": "user", "content": "你好！"}
-  ],
-  "temperature": 0.7,
-  "stream": false // 或 true，取决于您希望的响应方式
-}
+```bash
+pip install -r requirements.txt
 ```
 
-## 流式响应处理
+### 配置服务
 
-本代理根据客户端请求以及服务器配置处理流式响应：
+1. 复制配置文件模板：
+```bash
+cp config/settings.yaml.example config/settings.yaml
+```
 
-1.  **如果客户端请求非流式** (即请求体中 `stream` 为 `false` 或未提供):
-    *   代理将向 OpenAI API 发送非流式请求。
-    *   代理将向客户端返回一个完整的 JSON 响应。
-    *   此行为不受服务器端“假流式”配置的影响。
+2. 编辑 `config/settings.yaml` 配置文件，调整各项参数。
 
-2.  **如果客户端请求流式** (即请求体中 `stream` 为 `true`):
-    *   **且服务器“假流式”配置已启用** (`config/settings.yaml` 中 `proxy.fake_streaming.enabled: true`):
-        *   代理将向 OpenAI API 发送非流式请求。
-        *   代理将向客户端模拟流式响应：立即建立连接，定期发送心跳消息（例如 `data: [HEARTBEAT]\n\n`），直到从 OpenAI 获取到完整响应后，将完整数据作为流的最后一部分发送，并以 `data: [DONE]\n\n` 结束。
-    *   **且服务器“假流式”配置已禁用** (`config/settings.yaml` 中 `proxy.fake_streaming.enabled: false`):
-        *   代理将向 OpenAI API 发送正常的流式请求。
-        *   代理会将从 OpenAI API 收到的 Server-Sent Events (SSE) 流实时转发给客户端。
+3. 准备提示词模板文件：
+   - `templates/with_input.yaml` - 用户有输入时的模板
+   - `templates/without_input.yaml` - 用户无输入时的模板
 
-## 提示词模板 (`templates/default_prompt.yaml`)
+### 启动服务
 
-提示词模板是一个 YAML 文件，定义了一个消息对象列表。
+```bash
+python -m src.main
+```
 
-**特殊占位符**:
--   一个字典对象 `type: api_input_placeholder`: 标记历史消息 (`messages` 数组中除了最后一条用户消息之外的内容) 的插入位置。
--   字符串 `{{user_input}}`: 将被替换为原始请求中最后一条用户消息的 `content`。
+或使用 Uvicorn：
+```bash
+uvicorn src.main:app --host 0.0.0.0 --port 8000
+```
 
-**示例**:
+## 📖 API 使用方法
+
+### 基本请求格式
+
+```
+POST /{target_url}/v1/chat/completions
+```
+
+### URL 示例
+
+```bash
+# 代理到 OpenAI 官方 API
+curl -X POST "http://localhost:8000/https://api.openai.com/v1/chat/completions" \
+  -H "Authorization: Bearer your-openai-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": false
+  }'
+
+# 代理到其他兼容服务
+curl -X POST "http://localhost:8000/https://api.anthropic.com/v1/chat/completions" \
+  -H "Authorization: Bearer your-anthropic-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3-sonnet",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# 使用 URL 参数传递 API 密钥
+curl -X POST "http://localhost:8000/https://api.openai.com/v1/chat/completions?api_key=your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### 支持的客户端参数
+
+服务只接受以下客户端参数，其他参数会被忽略并使用配置文件中的默认值：
+
+- `model` - 模型名称
+- `messages` - 消息列表
+- `stream` - 是否流式响应
+
+## 📁 项目结构
+
+```
+hajimir/
+├── src/
+│   ├── main.py              # FastAPI 应用主入口
+│   ├── openai_client.py     # OpenAI 客户端逻辑
+│   ├── config.py            # 配置管理
+│   ├── template_handler.py  # 模板处理器
+│   ├── conversion_utils.py  # 响应后处理工具
+│   └── __init__.py
+├── config/
+│   ├── settings.yaml        # 主配置文件
+│   └── settings.yaml.example # 配置模板
+├── templates/
+│   ├── with_input.yaml      # 有用户输入时的模板
+│   └── without_input.yaml   # 无用户输入时的模板
+├── requirements.txt         # Python 依赖
+└── README.md               # 项目文档
+```
+
+## ⚙️ 配置说明
+
+### 主要配置项
+
 ```yaml
-- role: system
-  content: "这是来自模板的系统消息。"
-- type: api_input_placeholder
-- role: user
-  content: "这是模板中的固定用户消息，位于 {{user_input}} 之前。"
-- role: user
-  content: "{{user_input}}"
-- role: assistant
-  content: "这是模板中的固定助手消息。"
+app_name: "hajimir"
+log_level: "INFO"
+debug_mode: false
+
+proxy:
+  prompt_template_path_with_input: "templates/with_input.yaml"
+  prompt_template_path_without_input: "templates/without_input.yaml"
+  openai_request_timeout: 60
+  
+  openai_generation:
+    temperature: 1.0
+    max_tokens: 4096
+    top_p: 1.0
+    frequency_penalty: 0.0
+    presence_penalty: 0.0
 ```
 
-根据这个模板和用户的输入，最终发送给 OpenAI 的 `messages` 列表会被动态构建。
+### 模板文件格式
+
+模板文件使用 YAML 格式，支持以下类型的项：
+
+```yaml
+# 普通消息模板
+- role: "system"
+  content: "你是一个有用的AI助手。用户输入：{{user_input}}"
+
+# 历史消息占位符
+- type: "api_input_placeholder"
+
+# 正则处理规则
+- type: "正则"
+  查找: "\\[PLACEHOLDER\\]"
+  替换: "实际内容"
+  action: "replace"
+
+# JSON 载荷注入
+- type: "正则"
+  查找: ".*"
+  替换: '{"code": "print(\"Hello World\")", "language": "python"}'
+  action: "json_payload"
+```
+
+## 🔍 高级功能
+
+### 动态变量
+
+在模板或用户输入中使用动态变量：
+
+```yaml
+- role: "user"
+  content: "投掷一个六面骰子：{{roll 1d6}}，随机选择：{{random::选项A::选项B::选项C}}"
+```
+
+### 正则后处理
+
+对 API 响应进行自动化处理：
+
+```yaml
+- type: "正则"
+  查找: "\\b(错误|error)\\b"
+  替换: "修正"
+  action: "replace"
+```
+
+### JSON 载荷注入
+
+向响应中注入结构化数据：
+
+```yaml
+- type: "正则"
+  查找: "```python\\n(.+?)\\n```"
+  替换: '{"tool_code_interpreter_output": {"code": "$1", "language": "python"}}'
+  action: "json_payload"
+```
+
+## 🛠️ 开发和部署
+
+### 开发模式
+
+```bash
+# 设置调试模式
+export DEBUG_MODE=true
+
+# 启动开发服务器
+python -m src.main
+```
+
+### 生产部署
+
+```bash
+# 使用 Gunicorn
+gunicorn src.main:app -w 4 -k uvicorn.workers.UvicornWorker
+
+# 使用 Docker
+docker build -t hajimir .
+docker run -p 8000:8000 hajimir
+```
+
+## 📝 注意事项
+
+1. **API 密钥安全**: 确保 API 密钥的安全传输和存储
+2. **超时设置**: 根据目标 API 的响应时间调整超时配置
+3. **模板更新**: 模板文件支持热重载，修改后自动生效
+4. **日志记录**: 详细的日志记录有助于调试和监控
+5. **错误处理**: 服务会妥善处理各种错误情况并返回适当的 HTTP 状态码
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request 来改进项目！
+
+## 📄 许可证
+
+本项目采用 MIT 许可证。

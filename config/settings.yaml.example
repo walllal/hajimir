@@ -1,10 +1,29 @@
-# config/settings.yaml
-app_name: "hajimir"
-log_level: "INFO"
+# config/settings.yaml.example
+# 这是应用的配置文件示例，复制为 settings.yaml 并根据需要修改
 
+app_name: "hajimir"        # 应用名称，用于日志等
+log_level: "INFO"          # 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+debug_mode: false          # 是否启用调试模式。如果为 true，可能会输出更详细的日志。
+
+# Uvicorn 开发服务器配置 (仅当直接运行 src/main.py 时生效)
+server_host: "0.0.0.0"     # 服务器监听的主机地址。"0.0.0.0" 表示监听所有可用网络接口。
+server_port: 8000          # 服务器监听的端口号。
+
+# 代理核心功能配置
 proxy:
-  prompt_template_path: "templates/default_prompt.yaml" # 提示词模板文件路径
+  prompt_template_path_with_input: "templates/with_input.yaml"     # 当 {{user_input}} 有内容时使用的模板文件路径
+  prompt_template_path_without_input: "templates/without_input.yaml" # 当 {{user_input}} 无内容时使用的模板文件路径
+  openai_request_timeout: 60 # (秒) 代理向目标 OpenAI 服务发出请求的超时时间。最小值10秒。
+  
+  # OpenAI API 生成参数默认配置
+  openai_generation:
+    temperature: 1.0          # 控制生成文本的随机性 (0-2)
+    max_tokens: 4096          # 最大输出词元数
+    top_p: 1.0               # 控制采样时要考虑的词元比例 (0-1)
+    frequency_penalty: 0.0   # 频率惩罚 (-2.0到2.0)
+    presence_penalty: 0.0    # 存在惩罚 (-2.0到2.0)
+  
+  # 模拟流式响应配置
   fake_streaming:
-    enabled: true          # 是否启用假流式
-    heartbeat_interval: 1  # (秒) 假流式心跳间隔
-  openai_request_timeout: 600 # (秒) 请求OpenAI的超时时间
+    enabled: true          # 是否启用模拟流式响应功能
+    heartbeat_interval: 1  # (秒) 模拟流式响应时发送心跳信号的间隔时间。最小值1秒。
