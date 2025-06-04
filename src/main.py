@@ -82,6 +82,7 @@ LOGGING_CONFIG: Dict[str, Any] = {
             # 颜色通过 colorlog 的 log_colors 和 secondary_log_colors 控制
             "format": f"%(log_color)s%(asctime)s - %(blue)s{settings.app_name}%(reset)s - %(log_color)s%(levelname_chinese)s%(reset)s - %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S",
+            "force_color": settings.log_colors_enabled, # 根据配置决定是否强制颜色
             "log_colors": { # 日志级别名称的颜色
                 "DEBUG": "cyan",
                 "INFO": "green",
@@ -106,6 +107,7 @@ LOGGING_CONFIG: Dict[str, Any] = {
             # "访问" 硬编码为中文，并指定颜色
             "format": f"%(log_color)s%(asctime)s - %(blue)s{settings.app_name}%(reset)s - %(green)s访问%(reset)s - %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S",
+            "force_color": settings.log_colors_enabled, # 根据配置决定是否强制颜色
             "log_colors": { # 访问日志通常是 INFO 级别
                 "INFO": "green", # 用于 "访问" 二字的颜色 (通过 %(green)s 实现)
             },
@@ -210,6 +212,8 @@ async def chat_completions_proxy_endpoint(request: Request, target_url: str):
         logger.error(f"解析请求体失败: {e}", exc_info=settings.debug_mode)
         raise HTTPException(status_code=400, detail=f"无效的 JSON 请求体: {e}")
 
+    logger.info(f"接收到的原始请求体 (parsed json): {original_body}") # <-- 新增日志：记录原始请求体
+
     # 从URL中提取目标API端点和认证信息
     try:
         actual_target_url, api_key = extract_target_url_and_auth(request)
@@ -243,11 +247,14 @@ async def chat_completions_proxy_endpoint(request: Request, target_url: str):
                 logger.info(f"模拟流式响应已启用，将非流式响应转换为流式格式")
                 logger.info(f"模拟流式心跳间隔: {settings.proxy.fake_streaming.heartbeat_interval} 秒")
                 
+                prepared_data = _prepare_openai_messages(original_body)
+                logger.info(f"模拟流式 - _prepare_openai_messages 处理后的数据: {prepared_data}") # <-- 新增日志：记录处理后数据
+                
                 # 导入模拟流式功能
                 from .streaming_utils import fake_stream_generator_from_non_stream
                 
-                # 先准备消息以获取正则规则
-                prepared_data = _prepare_openai_messages(original_body)
+                # 先准备消息以获取正则规则 (已在上一步完成)
+                # prepared_data = _prepare_openai_messages(original_body)
                 selected_regex_rules = prepared_data.get("selected_regex_rules", [])
                 
                 # 创建非流式请求任务
@@ -265,6 +272,7 @@ async def chat_completions_proxy_endpoint(request: Request, target_url: str):
                 
                 # 先准备消息以获取正则规则
                 prepared_data = _prepare_openai_messages(original_body)
+                logger.info(f"真实流式 - _prepare_openai_messages 处理后的数据: {prepared_data}") # <-- 新增日志：记录处理后数据
                 
                 return StreamingResponse(
                     execute_stream_openai_request(original_body, actual_target_url, api_key, prepared_data),

@@ -231,17 +231,6 @@ export DEBUG_MODE=true
 python -m src.main
 ```
 
-### 生产部署
-
-```bash
-# 使用 Gunicorn
-gunicorn src.main:app -w 4 -k uvicorn.workers.UvicornWorker
-
-# 使用 Docker
-docker build -t hajimir .
-docker run -p 8000:8000 hajimir
-```
-
 ## 📝 注意事项
 
 1. **API 密钥安全**: 确保 API 密钥的安全传输和存储

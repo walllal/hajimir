@@ -177,9 +177,8 @@ async def execute_non_stream_openai_request(
     try:
         logger.debug(f"向 {target_url} 发送请求，模型: {target_model_name}")
         
-        # 调试：记录请求体内容
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"请求体: {json.dumps(target_request_body, ensure_ascii=False, indent=2)}")
+        # 记录将要发送的非流式请求体
+        logger.info(f"准备发送到目标API (非流式) 的请求体: {json.dumps(target_request_body, ensure_ascii=False, indent=2)}")
         
         async with httpx.AsyncClient(timeout=settings.proxy.openai_request_timeout) as client:
             response = await client.post(
@@ -301,9 +300,8 @@ async def execute_stream_openai_request(
     try:
         logger.debug(f"向 {target_url} 发送流式请求，模型: {target_model_name}")
         
-        # 调试：记录流式请求体内容
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"流式请求体: {json.dumps(target_request_body, ensure_ascii=False, indent=2)}")
+        # 记录将要发送的流式请求体
+        logger.info(f"准备发送到目标API (流式) 的请求体: {json.dumps(target_request_body, ensure_ascii=False, indent=2)}")
         
         async with httpx.AsyncClient(timeout=settings.proxy.openai_request_timeout) as client:
             async with client.stream(

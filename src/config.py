@@ -46,6 +46,7 @@ class AppSettings(BaseModel):
     debug_mode: bool = Field(default=False, description="是否启用调试模式。在调试模式下，可能会记录更详细的日志或启用特定的调试功能。")
     server_host: str = Field(default="0.0.0.0", description="Uvicorn 开发服务器监听的主机地址。")
     server_port: int = Field(default=8000, gt=0, lt=65536, description="Uvicorn 开发服务器监听的端口号。")
+    log_colors_enabled: Optional[bool] = Field(default=None, description="是否启用日志颜色。True 表示强制启用，False 表示强制禁用，None 表示自动检测 (TTY 时启用)。可通过环境变量 APP_LOG_COLORS_ENABLED 设置。")
 
 
 def load_config(path: str = "config/settings.yaml") -> AppSettings:

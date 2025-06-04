@@ -391,21 +391,34 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
 
     # 1. 提取历史消息和最后一个用户输入
     processed_messages: List[Dict[str, Any]] = [] # 用于构建处理后的消息列表
-    last_user_input_content: str = ""             # 存储最后一个用户的输入内容
-    historic_messages: List[Dict[str, Any]] = []  # 存储除最后一个用户输入外的历史消息
+    last_user_input_content_for_processing: Any = "" # 用户的完整最后输入 (str 或 list)
+    last_user_text_for_templating: str = ""          # 从用户最后输入中提取的文本，用于模板选择和替换
+    historic_messages: List[Dict[str, Any]] = []     # 存储除最后一个用户输入外的历史消息
 
     if original_messages:
         if original_messages[-1].get("role") == "user":
             # 如果最后一条消息是用户消息，则将其视为当前用户输入，其余为历史
-            last_user_input_content = original_messages[-1].get("content", "")
+            last_user_input_content_for_processing = original_messages[-1].get("content", "")
             historic_messages = original_messages[:-1]
+
+            if isinstance(last_user_input_content_for_processing, list):
+                # 从列表中提取第一个文本部分用于模板
+                for item in last_user_input_content_for_processing:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        last_user_text_for_templating = item.get("text", "")
+                        break
+                # 如果列表中没有文本，last_user_text_for_templating 保持 ""
+            elif isinstance(last_user_input_content_for_processing, str):
+                last_user_text_for_templating = last_user_input_content_for_processing
+            # else (e.g., content is None or other type), last_user_text_for_templating 保持 ""
         else:
             # 如果最后一条不是用户消息，则所有消息都视为历史
+            # last_user_input_content_for_processing 和 last_user_text_for_templating 保持 ""
             historic_messages = original_messages
     
     # 2. 根据用户输入内容选择合适的模板文件
-    selected_template_path = _get_template_path_for_user_input(last_user_input_content)
-    logger.debug(f"根据用户输入选择模板文件: '{selected_template_path}' (用户输入长度: {len(last_user_input_content.strip()) if last_user_input_content else 0})")
+    selected_template_path = _get_template_path_for_user_input(last_user_text_for_templating) # 使用提取的文本进行判断
+    logger.debug(f"根据用户输入选择模板文件: '{selected_template_path}' (用于模板的文本内容长度: {len(last_user_text_for_templating.strip()) if last_user_text_for_templating else 0})")
     
     # 3. 确保选定的模板已加载
     _load_templates(template_path=selected_template_path)
@@ -416,11 +429,14 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
     if not current_blueprints: # 如果没有加载任何模板蓝图
         logger.debug("未加载任何提示词模板，直接使用原始消息（如有）。")
         processed_messages.extend(copy.deepcopy(historic_messages)) # 直接使用历史消息
-        if last_user_input_content: # 如果有最后的用户输入，也添加进去
-             processed_messages.append({"role": "user", "content": last_user_input_content})
+        if last_user_input_content_for_processing: # 如果有最后的用户输入 (str 或 list)，也添加进去
+             processed_messages.append({"role": "user", "content": copy.deepcopy(last_user_input_content_for_processing)})
         # 特殊情况：如果原始消息只有一条用户消息，且无历史，确保它被加入
         elif not historic_messages and original_messages and original_messages[-1].get("role") == "user":
-            processed_messages.append(copy.deepcopy(original_messages[-1]))
+            # 确保使用深拷贝，并且是原始的 content (可能是列表)
+            user_msg_copy = copy.deepcopy(original_messages[-1])
+            # content 已经是原始的，不需要从 last_user_input_content_for_processing 再次获取
+            processed_messages.append(user_msg_copy)
         
         # 如果上述处理后 processed_messages 仍为空，但 original_messages 不为空
         # (例如，original_messages 只包含 assistant 消息且无模板)，则直接使用原始消息。
@@ -435,39 +451,94 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
             if blueprint_msg.get("type") == "api_input_placeholder":
                 # 如果模板项是历史消息占位符，则在此处插入历史消息
                 logger.debug(f"在模板中遇到 'api_input_placeholder'，插入 {len(historic_messages)} 条历史消息。")
-                processed_messages.extend(copy.deepcopy(historic_messages)) 
+                processed_messages.extend(copy.deepcopy(historic_messages))
             else:
-                # 普通模板项，处理 {{user_input}} 占位符
+                # 普通模板项
                 content_template = blueprint_msg.get("content")
-                if isinstance(content_template, str):
-                    # 替换模板内容中的 {{user_input}} 为实际的最后一个用户输入
-                    temp_content = content_template.replace("{{user_input}}", last_user_input_content)
-                    blueprint_msg["content"] = temp_content 
+                role = blueprint_msg.get("role")
+
+                if role == "user" and isinstance(content_template, str) and "{{user_input}}" in content_template:
+                    if isinstance(last_user_input_content_for_processing, list):
+                        # 用户输入是多模态列表，需要将模板文本和用户输入列表合并
+                        parts = content_template.split("{{user_input}}", 1) # 只分割一次，得到占位符前后的部分
+                        new_content_list = []
+                        if parts[0]: # 如果 {{user_input}} 前面有文本
+                            new_content_list.append({"type": "text", "text": parts[0]})
+                        
+                        new_content_list.extend(copy.deepcopy(last_user_input_content_for_processing)) # 添加用户输入的多模态内容
+                        
+                        if len(parts) > 1 and parts[1]: # 如果 {{user_input}} 后面有文本
+                            new_content_list.append({"type": "text", "text": parts[1]})
+                        
+                        blueprint_msg["content"] = new_content_list
+                        logger.debug(f"用户角色蓝图的多模态 content 构建完成: {blueprint_msg['content']}")
+                    elif isinstance(last_user_input_content_for_processing, str):
+                        # 用户输入是纯文本字符串，直接替换
+                        blueprint_msg["content"] = content_template.replace("{{user_input}}", last_user_input_content_for_processing)
+                        logger.debug(f"用户角色蓝图的文本 content ({{user_input}} 存在) 被用户文本输入替换: {blueprint_msg['content']}")
+                    else:
+                        # 用户输入为空或非预期类型，用空字符串替换 {{user_input}}
+                        blueprint_msg["content"] = content_template.replace("{{user_input}}", "")
+                        logger.debug(f"用户角色蓝图的 {{user_input}} 被空字符串替换，因用户输入为空或非列表/字符串。")
+                elif isinstance(content_template, str):
+                    # 对于其他角色，或者用户角色但其模板 content 不包含 "{{user_input}}" 的情况
+                    # 如果模板内容中仍有 {{user_input}} (理论上不应进入此分支如果上面逻辑正确覆盖了 user role 的情况)
+                    # 或者对于非 user role 的模板，我们仍然用 last_user_text_for_templating 替换
+                    blueprint_msg["content"] = content_template.replace("{{user_input}}", last_user_text_for_templating)
+                    # logger.debug(f"角色 '{role}' 蓝图的 content ({{user_input}} 可能存在) 被 'last_user_text_for_templating' 处理。")
+
+                # 如果 content_template 本身不是字符串 (例如，模板中直接定义了列表内容)，则不进行替换，保留原样
+                
                 processed_messages.append(blueprint_msg)
         
-        # 检查模板中是否实际包含了 api_input_placeholder
-        has_placeholder = any(bp.get("type") == "api_input_placeholder" for bp in current_blueprints)
-        if not has_placeholder and last_user_input_content:
-            # 如果模板中没有历史消息占位符，但用户有实际的最后输入，则应将其追加到末尾
-            logger.debug("模板中无 'api_input_placeholder'，但存在最后用户输入，将其追加。")
-            processed_messages.append({"role": "user", "content": last_user_input_content})
-        # 处理只有一个用户消息，且模板无占位符的情况
-        elif not has_placeholder and not historic_messages and original_messages and original_messages[-1].get("role") == "user":
-             logger.debug("模板中无 'api_input_placeholder'，原始消息仅一条用户消息，将其追加。")
-             processed_messages.append(copy.deepcopy(original_messages[-1]))
+        # 检查模板中是否实际包含了代表当前用户输入的 'user' role 蓝图
+        # (更准确的检查是看 last_user_input_content_for_processing 是否已经被某个 user role 的蓝图使用了)
+        # 一个简化的检查：如果 last_user_input_content_for_processing 存在，但 processed_messages 中最后一条不是 user role，
+        # 或者最后一条是 user role 但其 content 与 last_user_input_content_for_processing 不同源（这比较难判断）
+        # 我们假设：如果模板中没有显式的 user role 蓝图来承接 last_user_input_content_for_processing，
+        # 并且 last_user_input_content_for_processing 确实存在，那么它应该被追加。
+
+        # 查找是否有 user role 的蓝图处理了 {{user_input}}
+        user_input_explicitly_handled = False
+        for bp_msg in current_blueprints: # 检查原始蓝图
+            if bp_msg.get("role") == "user" and isinstance(bp_msg.get("content"), str) and "{{user_input}}" in bp_msg.get("content"):
+                user_input_explicitly_handled = True
+                break
+        
+        if not user_input_explicitly_handled and last_user_input_content_for_processing:
+            # 如果没有任何 user role 的蓝图包含 {{user_input}} 来处理当前用户输入，
+            # 并且确实存在当前用户输入，则将其作为新的 user消息追加。
+            # 这覆盖了 "模板中无 'api_input_placeholder'，但存在最后用户输入" 的情况，
+            # 以及 "原始消息仅一条用户消息，且模板未处理它" 的情况。
+            logger.debug("当前用户输入未被任何包含 '{{user_input}}' 的用户角色蓝图处理，将其作为新消息追加。")
+            processed_messages.append({"role": "user", "content": copy.deepcopy(last_user_input_content_for_processing)})
 
     # 5. 对所有消息内容应用全局动态变量处理 ({{roll}}, {{random}})
     final_messages_step1: List[Dict[str, Any]] = []
     logger.debug(f"开始对 {len(processed_messages)} 条消息应用动态变量处理。")
     for msg in processed_messages:
-        new_msg = msg.copy() # 浅拷贝，因为 content 字段会被完整替换
-        content = new_msg.get("content")
-        if isinstance(content, str):
-            # 先应用动态变量处理
-            content_after_dice = _process_dice_rolls(content)
+        new_msg = copy.deepcopy(msg) # 使用深拷贝以防修改原始列表中的字典
+        content_val = new_msg.get("content")
+        if isinstance(content_val, str):
+            # 对字符串内容应用动态变量处理
+            content_after_dice = _process_dice_rolls(content_val)
             content_after_random = _process_random_choices(content_after_dice)
-            # 注意：正则规则不在此处应用，只在处理 OpenAI 响应时应用
             new_msg["content"] = content_after_random
+        elif isinstance(content_val, list):
+            # 对列表内容中的文本部分应用动态变量处理
+            processed_list_content = []
+            for item in content_val:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_part = item.get("text", "")
+                    text_after_dice = _process_dice_rolls(text_part)
+                    text_after_random = _process_random_choices(text_after_dice)
+                    # 创建新字典或更新副本以避免修改原始 item
+                    processed_item = copy.deepcopy(item)
+                    processed_item["text"] = text_after_random
+                    processed_list_content.append(processed_item)
+                else:
+                    processed_list_content.append(copy.deepcopy(item)) # 其他部分原样保留
+            new_msg["content"] = processed_list_content
         final_messages_step1.append(new_msg)
 
     # 6. 移除 content 为空字符串或 None 的消息
@@ -475,13 +546,19 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
     if final_messages_step1:
         original_count = len(final_messages_step1)
         for msg in final_messages_step1:
-            # 确保 msg 是字典且 content 存在且非空
-            if isinstance(msg, dict) and msg.get("content") is not None and msg.get("content") != "":
-                final_messages_step2.append(msg)
+            if isinstance(msg, dict) and msg.get("content") is not None:
+                content_val = msg.get("content")
+                if isinstance(content_val, str) and content_val == "": # 空字符串内容
+                    pass # 不添加
+                elif isinstance(content_val, list) and not content_val: # 空列表内容
+                    pass # 不添加
+                else:
+                    final_messages_step2.append(msg) # 其他情况（非空字符串，非空列表）
+            # 如果 msg 不是字典或 content 为 None，则不添加
         if len(final_messages_step2) < original_count:
-            logger.debug(f"移除了 {original_count - len(final_messages_step2)} 条 content 为空或 None 的消息。")
+            logger.debug(f"移除了 {original_count - len(final_messages_step2)} 条 content 为空/None 或无效的消息。")
         if not final_messages_step2 and original_count > 0: # 如果所有消息都被移除了
-            logger.warning("所有消息因 content 为空或 None 被移除。最终消息列表将为空。")
+            logger.warning("所有消息因 content 为空/None 或无效被移除。最终消息列表将为空。")
     
     # 7. 合并相邻的、角色相同的消息
     if not final_messages_step2:
