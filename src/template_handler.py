@@ -8,6 +8,8 @@
 - 处理模板内容中的动态变量，例如：
     - 骰子投掷 (`{{roll XdY}}`): 模拟投掷X个Y面骰子，并替换为总点数。
     - 随机选择 (`{{random::opt1::opt2...}}`): 从提供的选项中随机选择一个。
+    - 变量设置 (`{{setvar::变量名::值}}`): 设置一个变量的值。
+    - 变量获取 (`{{getvar::变量名}}`): 获取变量的值，如果不存在则返回空字符串。
 - 应用用户定义的正则表达式规则对生成内容或模板内容进行后处理。
 - 根据加载的模板、用户输入历史和最新的用户输入，构建最终用于提交给大语言模型的
   OpenAI 格式消息列表。这包括模板注入、消息合并等逻辑。
@@ -29,6 +31,9 @@ logger = logging.getLogger(settings.app_name) # 获取logger实例，用于记�
 _CACHED_PROMPT_BLUEPRINTS: Dict[str, List[Dict[str, Any]]] = {}  # 按模板路径缓存的提示词蓝图
 _CACHED_REGEX_RULES: Dict[str, List[Dict[str, Any]]] = {}        # 按模板路径缓存的正则规则
 _LAST_TEMPLATE_MTIME: Dict[str, float] = {}                      # 按模板路径缓存的最后修改时间
+
+# --- 新增：全局变量存储 ---
+_GLOBAL_VARIABLES: Dict[str, str] = {}                          # 全局变量存储字典
 
 def _get_template_path_for_user_input(user_input_content: str) -> str:
     """
@@ -169,9 +174,114 @@ def _load_templates(template_path: str, force_reload: bool = False) -> None:
             _CACHED_PROMPT_BLUEPRINTS[template_path] = []
             _CACHED_REGEX_RULES[template_path] = []
 
-# 应用启动时执行一次模板加载，确保初始状态正确
-_load_templates(template_path=settings.proxy.prompt_template_path_with_input, force_reload=True)
-_load_templates(template_path=settings.proxy.prompt_template_path_without_input, force_reload=True)
+def _process_variables(text_content: str) -> str:
+    """
+    处理文本内容中的变量设置和获取操作。
+    
+    支持的变量操作：
+    - {{setvar::变量名::值}}: 设置一个全局变量的值，替换为空字符串
+    - {{getvar::变量名}}: 获取全局变量的值，如果不存在则返回空字符串
+    
+    变量设置会先于变量获取执行，这样可以在同一条消息中设置和获取变量。
+    
+    Args:
+        text_content (str): 可能包含变量操作的原始文本内容。
+        
+    Returns:
+        str: 处理过变量操作后的文本内容。如果输入不是字符串，则原样返回。
+    """
+    global _GLOBAL_VARIABLES
+    
+    if not isinstance(text_content, str):
+        logger.debug("输入到 _process_variables 的内容非字符串，跳过处理。")
+        return text_content
+    
+    current_content = text_content
+    
+    # 第一步：处理变量设置 {{setvar::变量名::值}}
+    def replace_setvar(match: re.Match) -> str:
+        """内部辅助函数，用于处理变量设置。"""
+        try:
+            var_name = match.group(1).strip() # 变量名
+            var_value = match.group(2) if match.group(2) is not None else "" # 变量值，允许为空
+            
+            if not var_name:
+                logger.warning("变量设置操作中变量名为空，操作被跳过。")
+                return f"{{setvar::{var_name}::{var_value} - 变量名为空}}"
+            
+            # 设置全局变量
+            _GLOBAL_VARIABLES[var_name] = var_value
+            logger.debug(f"设置全局变量: '{var_name}' = '{var_value}'")
+            
+            # 返回空字符串，即移除setvar标签
+            return ""
+            
+        except Exception as e:
+            logger.error(f"处理变量设置 {{setvar::{match.group(1)}::{match.group(2)}}} 时出错: {e}", exc_info=settings.debug_mode)
+            return f"{{setvar::{match.group(1)}::{match.group(2)} - 处理错误}}"
+    
+    # 使用正则表达式处理所有的setvar操作
+    # 模式解释：匹配 {{setvar::变量名::值}}，其中值可能包含::，所以用非贪婪匹配到最后的}}
+    current_content = re.sub(r"\{\{setvar::([^:]+)::(.*?)\}\}", replace_setvar, current_content)
+    
+    # 第二步：处理变量获取 {{getvar::变量名}}
+    def replace_getvar(match: re.Match) -> str:
+        """内部辅助函数，用于处理变量获取。"""
+        try:
+            var_name = match.group(1).strip() # 变量名
+            
+            if not var_name:
+                logger.warning("变量获取操作中变量名为空，返回空字符串。")
+                return ""
+            
+            # 获取全局变量值，如果不存在则返回空字符串
+            var_value = _GLOBAL_VARIABLES.get(var_name, "")
+            logger.debug(f"获取全局变量: '{var_name}' = '{var_value}'")
+            
+            return var_value
+            
+        except Exception as e:
+            logger.error(f"处理变量获取 {{getvar::{match.group(1)}}} 时出错: {e}", exc_info=settings.debug_mode)
+            return f"{{getvar::{match.group(1)} - 处理错误}}"
+    
+    # 使用正则表达式处理所有的getvar操作
+    current_content = re.sub(r"\{\{getvar::([^}]+)\}\}", replace_getvar, current_content)
+    
+    return current_content
+
+def get_global_variables() -> Dict[str, str]:
+    """
+    获取当前所有全局变量的副本。
+    
+    Returns:
+        Dict[str, str]: 包含所有全局变量的字典副本。
+    """
+    return _GLOBAL_VARIABLES.copy()
+
+def set_global_variable(var_name: str, var_value: str) -> None:
+    """
+    手动设置一个全局变量。
+    
+    Args:
+        var_name (str): 变量名
+        var_value (str): 变量值
+    """
+    global _GLOBAL_VARIABLES
+    if not isinstance(var_name, str) or not var_name.strip():
+        logger.warning("试图设置的变量名无效，操作被跳过。")
+        return
+    
+    _GLOBAL_VARIABLES[var_name.strip()] = str(var_value) if var_value is not None else ""
+    logger.debug(f"手动设置全局变量: '{var_name}' = '{var_value}'")
+
+def clear_global_variables() -> None:
+    """
+    清除所有全局变量。
+    """
+    global _GLOBAL_VARIABLES
+    cleared_count = len(_GLOBAL_VARIABLES)
+    _GLOBAL_VARIABLES.clear()
+    logger.info(f"已清除 {cleared_count} 个全局变量。")
 
 def _process_dice_rolls(text_content: str) -> str:
     """
@@ -370,7 +480,7 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
     4. 根据模板注入历史消息和用户输入：
         - 如果模板中有 `type: api_input_placeholder`，则在该位置插入历史消息。
         - 将模板内容中的 `{{user_input}}` 替换为最后一个用户输入。
-    5. 对所有生成的消息内容应用全局动态变量处理 ({{roll}}, {{random}})
+    5. 对所有生成的消息内容应用全局动态变量处理 ({{roll}}, {{random}}, {{setvar}}, {{getvar}})
     6. 移除内容为空或 None 的消息。
     7. 合并相邻的、角色相同的消息。
 
@@ -513,7 +623,7 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
             logger.debug("当前用户输入未被任何包含 '{{user_input}}' 的用户角色蓝图处理，将其作为新消息追加。")
             processed_messages.append({"role": "user", "content": copy.deepcopy(last_user_input_content_for_processing)})
 
-    # 5. 对所有消息内容应用全局动态变量处理 ({{roll}}, {{random}})
+    # 5. 对所有消息内容应用全局动态变量处理 ({{roll}}, {{random}}, {{setvar}}, {{getvar}})
     final_messages_step1: List[Dict[str, Any]] = []
     logger.debug(f"开始对 {len(processed_messages)} 条消息应用动态变量处理。")
     for msg in processed_messages:
@@ -521,7 +631,9 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
         content_val = new_msg.get("content")
         if isinstance(content_val, str):
             # 对字符串内容应用动态变量处理
-            content_after_dice = _process_dice_rolls(content_val)
+            # 按顺序应用：变量操作 -> 骰子投掷 -> 随机选择
+            content_after_vars = _process_variables(content_val)
+            content_after_dice = _process_dice_rolls(content_after_vars)
             content_after_random = _process_random_choices(content_after_dice)
             new_msg["content"] = content_after_random
         elif isinstance(content_val, list):
@@ -530,7 +642,9 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
             for item in content_val:
                 if isinstance(item, dict) and item.get("type") == "text":
                     text_part = item.get("text", "")
-                    text_after_dice = _process_dice_rolls(text_part)
+                    # 按顺序应用：变量操作 -> 骰子投掷 -> 随机选择
+                    text_after_vars = _process_variables(text_part)
+                    text_after_dice = _process_dice_rolls(text_after_vars)
                     text_after_random = _process_random_choices(text_after_dice)
                     # 创建新字典或更新副本以避免修改原始 item
                     processed_item = copy.deepcopy(item)
@@ -597,3 +711,67 @@ def _prepare_openai_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("预处理后最终的 messages 列表为空。") # 使用 info 级别，因为这可能是重要情况
         
     return result
+
+# 应用启动时执行一次模板加载，确保初始状态正确
+_load_templates(template_path=settings.proxy.prompt_template_path_with_input, force_reload=True)
+_load_templates(template_path=settings.proxy.prompt_template_path_without_input, force_reload=True)
+
+# 导出主要函数供外部使用
+def prepare_messages(original_body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    公开的消息准备函数，供外部模块调用。
+    
+    Args:
+        original_body (Dict[str, Any]): 原始的 OpenAI 格式请求体
+        
+    Returns:
+        Dict[str, Any]: 处理后的消息数据，包含 model、messages 和 selected_regex_rules
+    """
+    return _prepare_openai_messages(original_body)
+
+def apply_regex_rules(content: str, regex_rules: List[Dict[str, Any]]) -> str:
+    """
+    公开的正则规则应用函数，供外部模块调用。
+    
+    Args:
+        content (str): 需要处理的内容
+        regex_rules (List[Dict[str, Any]]): 正则规则列表
+        
+    Returns:
+        str: 处理后的内容
+    """
+    return _apply_regex_rules_to_content(content, regex_rules)
+
+def reload_templates(force: bool = False) -> None:
+    """
+    手动重载所有模板文件。
+    
+    Args:
+        force (bool): 是否强制重载，忽略文件修改时间检查
+    """
+    _load_templates(template_path=settings.proxy.prompt_template_path_with_input, force_reload=force)
+    _load_templates(template_path=settings.proxy.prompt_template_path_without_input, force_reload=force)
+    logger.info("模板重载完成。")
+
+def get_template_status() -> Dict[str, Any]:
+    """
+    获取当前模板加载状态的信息。
+    
+    Returns:
+        Dict[str, Any]: 包含模板状态信息的字典
+    """
+    return {
+        "with_input_template": {
+            "path": settings.proxy.prompt_template_path_with_input,
+            "blueprints_count": len(_CACHED_PROMPT_BLUEPRINTS.get(settings.proxy.prompt_template_path_with_input, [])),
+            "regex_rules_count": len(_CACHED_REGEX_RULES.get(settings.proxy.prompt_template_path_with_input, [])),
+            "last_modified": _LAST_TEMPLATE_MTIME.get(settings.proxy.prompt_template_path_with_input, 0.0)
+        },
+        "without_input_template": {
+            "path": settings.proxy.prompt_template_path_without_input,
+            "blueprints_count": len(_CACHED_PROMPT_BLUEPRINTS.get(settings.proxy.prompt_template_path_without_input, [])),
+            "regex_rules_count": len(_CACHED_REGEX_RULES.get(settings.proxy.prompt_template_path_without_input, [])),
+            "last_modified": _LAST_TEMPLATE_MTIME.get(settings.proxy.prompt_template_path_without_input, 0.0)
+        },
+        "global_variables_count": len(_GLOBAL_VARIABLES)
+    }
