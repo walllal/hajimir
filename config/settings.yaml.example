@@ -7,7 +7,7 @@ debug_mode: false          # 是否启用调试模式。如果为 true，可能�
 
 # Uvicorn 开发服务器配置 (仅当直接运行 src/main.py 时生效)
 server_host: "0.0.0.0"     # 服务器监听的主机地址。"0.0.0.0" 表示监听所有可用网络接口。
-server_port: 8000          # 服务器监听的端口号。
+server_port: 8001          # 服务器监听的端口号。
 
 # 代理核心功能配置
 proxy:
@@ -18,7 +18,7 @@ proxy:
   # OpenAI API 生成参数默认配置
   openai_generation:
     temperature: 1.0          # 控制生成文本的随机性 (0-2)
-    max_tokens: 4096          # 最大输出词元数
+    max_tokens: 99999          # 最大输出词元数
     top_p: 1.0               # 控制采样时要考虑的词元比例 (0-1)
     frequency_penalty: 0.0   # 频率惩罚 (-2.0到2.0)
     presence_penalty: 0.0    # 存在惩罚 (-2.0到2.0)
