@@ -1,0 +1,9 @@
+services:
+  hajimir:
+    build: .
+    container_name: hajimir
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./config:/app/config
+      - ./templates:/app/templates
