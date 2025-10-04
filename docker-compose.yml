@@ -1,9 +1,23 @@
+# 使用 Docker Compose 3.8 版本语法
 services:
   hajimir:
-    build: .
+    # 从当前目录的 Dockerfile 构建镜像
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: hajimir
+    # 添加重启策略，确保容器在退出时能自动重启
+    restart: unless-stopped
     ports:
+      # 将主机的 8001 端口映射到容器的 8001 端口
       - "8001:8001"
     volumes:
-      - ./config:/app/config
-      - ./templates:/app/templates
+      # 挂载配置文件和模板目录，实现热更新。
+      # 设置为只读(ro)以增强安全性，因为容器不应修改这些文件。
+      - ./config:/app/config:ro
+      - ./templates:/app/templates:ro
+      # [开发模式] 挂载源代码目录，配合下面的 command 可实现代码热重载。
+      - ./src:/app/src
+    # [开发模式] 覆盖 Dockerfile 中的 CMD，使用 --reload 参数
+    # 这会在源代码文件发生变更时自动重新加载 uvicorn 服务。
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
